@@ -1,7 +1,7 @@
 ###Project: Household modeling
 ###Purpose: Simulate model from https://academic.oup.com/aje/article/186/12/1380/3865598
 ###Author: Josh Petrie
-###Date: 11/29/2022
+###Update: 6/7/2023
 
 # ================== Set Up ==================
 # Read in proxy community hazard data, one row for each date of study follow up including
@@ -58,7 +58,18 @@ pars <- data.frame( "community_hazard" = 0.000675, #community scaling parameter
 # how many days to run the model
 days <- nrow( com )
 
-# ================== Model function ==================
+# ================== Model functions ==================
+
+daily_com_risk <- function(t){
+  ( 1 - exp( -( com$COM[ t ] * pars$community_hazard ) ) )
+}
+
+daily_hh_risk <- function(t){
+  (1-exp(-(exp(-(t/pars$weibull_alpha)^pars$weibull_gamma)-
+             exp(-((t+1)/pars$weibull_alpha)^pars$weibull_gamma))*
+           pars$household_hazard))
+}
+
 model <- function( agents, pars, days ){
   
   #Move through time
@@ -70,7 +81,7 @@ model <- function( agents, pars, days ){
       #sample random number
       cProb <- runif(1,0,1)
       #if sampled number is less than probability of infection from community...
-      if( cProb < ( 1 - exp( -( com$COM[ d ] * pars$community_hazard ) ) ) ){
+      if( cProb < daily_com_risk(d)){
         #...then individual is infected. Update their data
         agents$status[ agents$id == i ] <- "I"
         agents$onset_date[ agents$id == i ] <- d
@@ -103,9 +114,7 @@ model <- function( agents, pars, days ){
         #sample random number
         hProb <- runif(1,0,1)
         #if sampled number is less than probability of infection from household...
-        if( hProb < (1-exp(-(exp(-(current_time_I/pars$weibull_alpha)^pars$weibull_gamma)-
-                  exp(-((current_time_I+1)/pars$weibull_alpha)^pars$weibull_gamma))*
-                pars$household_hazard))){
+        if( hProb < daily_hh_risk(current_time_I)){
           #...then individual is infected. Update their data
           agents$status[ agents$id == j ] <- "I"
           agents$onset_date[ agents$id == j ] <- d
@@ -166,6 +175,24 @@ proc.time() - ptm
 # ================== Some basic summaries ==================
 library(dplyr) 
 
+get_14d_sir <- function(){
+  d_inf <- rep(NA,14)
+  c_uninf <- rep(NA,14)
+  for(i in 1:14){
+    if(i==1){
+      d_inf[i] <- daily_risk(1)
+      c_uninf[i] <- 1 - d_inf[i]
+    } else{
+      d_inf[i] <- prod(c_uninf[(i-1):1])*daily_risk(i)
+      c_uninf[i] <- 1 - d_inf[i]
+    }
+  }
+  c_sir <- sum(d_inf)
+  return(c_sir)
+}
+
+sir <- get_14d_sir()
+
 ###summarizing average number of infections by community or household source
 Out1_summary <- Out1 %>%
   group_by(iter) %>%
@@ -176,19 +203,23 @@ Out1_summary <- Out1 %>%
     hh_acquired = sum(source_I == "household", na.rm = TRUE)
   ) %>% 
   mutate(
+    #total infection
     infection_risk = infections/n_pop,
-    #
-    # I have questions about how best to actually recover SIR here.
-    # It seems that the calculation below still assumes all infected by the
-    # index case resulting in overestimation.
-    #
-    secondary_infection_risk = hh_acquired / hh_exposed
+    
+    #secondary infection risk that would be observed if dividing all hh infections 
+    #by total hh exposed
+    observed_secondary_infection_risk = hh_acquired / hh_exposed,
+    
+    #true secondary infection risk that accounts for the fact that exposed hh
+    #members can be at risk from multiple previously infected hh contacts
+    true_secondary_infection_risk = sir
   ) %>%
   ungroup()
 
 quantile(Out1_summary$infections, probs = c(.5,.05,.95))
 quantile(Out1_summary$cmnty_acquired, probs = c(.5,.05,.95))
 quantile(Out1_summary$hh_acquired, probs = c(.5,.05,.95))
+
 
 ###epi curves
 library(ggplot2)
@@ -247,3 +278,10 @@ plot(net, edge.arrow.size=.05, vertex.size=2, vertex.label=NA)
 plot(net, edge.arrow.size=.01, vertex.size=7, vertex.label.cex=.6)
 
 table(Out1$order,Out1$iter)
+
+
+
+
+
+
+
